@@ -33,30 +33,31 @@ app.add_middleware(
 # Custom middleware to protect routes based on Clerk authentication and authorization.
 @app.middleware("http")
 async def clerk_auth_middleware(request: Request, call_next):
-    # Allow preflight OPTIONS requests (handled by CORS middleware)
+    # 调试：打印请求 URL 和请求头
+    print("DEBUG: Request URL:", request.url)
+    print("DEBUG: Request Headers:", dict(request.headers))
+
     if request.method.lower() == "options":
         return await call_next(request)
 
-    # Define paths that should bypass authentication (e.g. login and favicon)
     unprotected_paths = ["/login.html", "/favicon.ico"]
     if any(request.url.path.startswith(path) for path in unprotected_paths):
+        print("DEBUG: Unprotected path, skipping auth.")
         return await call_next(request)
 
-    # Instantiate the Clerk SDK.
-    # (If desired, you could instantiate this once globally if it is thread‐safe.)
+    # 实例化 Clerk SDK
     clerk = Clerk(bearer_auth=CLERK_SECRET_KEY)
 
-    # Convert the FastAPI request into an httpx.Request so that it can be passed to Clerk's helper.
-    # (We pass the method, URL, and headers – assuming that Clerk can extract the token from headers or cookies.)
+    # 将 FastAPI 的请求转换为 httpx.Request
     client_request = httpx.Request(
-        method=request.method, url=str(request.url), headers=dict(request.headers)
+        method=request.method,
+        url=str(request.url),
+        headers=dict(request.headers)
     )
 
-    # Set up the options for request authentication.
-    # Here, we allow only tokens issued for our own app (for example "http://0.0.0.0:8000").
+    # 根据环境设置授权列表
     if ENVIRONMENT == "development":
         authorized_parties = [
-            # "https://example.com",
             f"https://{CLERK_DOMAIN}",
             f"https://{DOMAIN}",
             f"https://{APP_URL_VERCEL}",
@@ -65,33 +66,46 @@ async def clerk_auth_middleware(request: Request, call_next):
         ]
     else:
         authorized_parties = [
-            # "https://example.com",
             f"https://{CLERK_DOMAIN}",
             f"https://{DOMAIN}",
             f"https://{APP_URL_VERCEL}",
         ]
+    print("DEBUG: Authorized parties:", authorized_parties)
+
     options = AuthenticateRequestOptions(authorized_parties=authorized_parties)
 
+    # 尝试验证请求
     try:
         auth_state = clerk.authenticate_request(client_request, options)
-    except Exception:
-        # In case of error or exception, log it and redirect the user to the login page.
+        print("DEBUG: Auth state:", auth_state)
+    except Exception as e:
+        print("DEBUG: Exception during authentication:", str(e))
         return RedirectResponse(url="/login.html")
 
-    # If the token is invalid (i.e. not signed in) then redirect to login page.
+    # 判断是否登录
     if not auth_state.is_signed_in:
+        print("DEBUG: User not signed in.")
         return RedirectResponse(url="/login.html")
 
-    # Get user ID from session claims
-    user_id = auth_state.payload.get('sub')
-    # Fetch full user details including metadata
-    user = clerk.users.get(user_id=user_id)
+    # 从 Token 中获取用户 ID
+    user_id = auth_state.payload.get("sub")
+    print("DEBUG: User ID from token:", user_id)
 
+    # 获取用户完整信息
+    try:
+        user = clerk.users.get(user_id=user_id)
+        print("DEBUG: User public_metadata:", user.public_metadata)
+    except Exception as e:
+        print("DEBUG: Exception fetching user info:", str(e))
+        return RedirectResponse(url="/login.html")
+
+    # 检查用户权限
     if user.public_metadata.get("isCustomer"):
-        # Continue processing the request if authentication and authorization succeeded.
+        print("DEBUG: User is authorized, processing request.")
         response = await call_next(request)
         return response
     else:
+        print("DEBUG: User is NOT authorized.")
         return RedirectResponse(url="/login.html")
 
 
